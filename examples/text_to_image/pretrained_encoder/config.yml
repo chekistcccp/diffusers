@@ -1,0 +1,24 @@
+name: bird_classifier
+
+train_data: "/home/jun/work/species_genAI/finetune/pretrain_species_encoder_susbsystems/data/birds9_subsystems_pretrain_ProteinSubset_size_4000_samplingRound_20000.train"
+valid_data: "/home/jun/work/species_genAI/finetune/pretrain_species_encoder_susbsystems/data/birds9_subsystems_pretrain_ProteinSubset_size_4000_samplingRound_20000.validate"
+#test_data: "/home/jun/work/species_genAI/finetune/pretrain_species_encoder_susbsystems/test"
+
+embeddings: "/home/user/guojirui/diffusers-brid-lora/birdClassifier/example_embed"
+species_classes: "/home/user/guojirui/diffusers/examples/text_to_image/pretrained_encoder/example_species_id.json"
+vocabulary: "/home/user/guojirui/diffusers/examples/text_to_image/pretrained_encoder/example_bird_protein_vocabulary.txt"
+
+max_tokens: 6000
+
+# training
+steps: 20000
+batch_size: 16
+num_workers: 16
+learning_rate: 0.0003
+accumulate_grad_batches: 1
+early_stop_callback: 1000
+
+classify: True
+
+gpus: 1
+precision: 16-mixed

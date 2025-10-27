@@ -73,7 +73,8 @@ class speciesModel(pl.LightningModule):
             (k[len(remove_prefix):], v) if k.startswith(remove_prefix) else (k , v) for k, v in checkpoint["state_dict"].items()
                                     ]
                                 )
-        self.model.load_state_dict(state_dict)
+        # 使用非严格模式加载模型参数，以处理新增的局部稀疏注意力层
+        self.model.load_state_dict(state_dict, strict=False)
         #epoc = checkpoint['epoch']
         #loss = checkpoint['loss']
         #for param in self.model.parameters():

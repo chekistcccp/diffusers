@@ -256,7 +256,9 @@ class DAN(pl.LightningModule):
         self.compression_module = AttentionCompression(input_dim=self.embedding_size, \
                                                   output_dim=768, \
                                                   num_tokens=self.sequence_max_length, \
-                                                  num_compressed_tokens = 75) # 77 total (consuming 1 + 1 for start + end tokens).
+                                                  num_compressed_tokens = 75, \
+                                                  use_local_sparse_attention=True, \
+                                                  window_size=64) # 77 total (consuming 1 + 1 for start + end tokens).
         
         #self.compression_module.to('cuda:0') # pretrain encoder, on 1 gpu.
         self.compression_module.to('cuda') # train entire model on 2 cuda devices
