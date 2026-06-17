@@ -564,10 +564,6 @@ class BnB8BitDiffusersQuantizer(DiffusersQuantizer):
         # Because we're mandating `bitsandbytes` 0.43.3.
         return True
 
-    @property
-    def is_compileable(self) -> bool:
-        return True
-
     def _dequantize(self, model):
         from .utils import dequantize_and_replace
 

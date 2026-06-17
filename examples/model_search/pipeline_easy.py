@@ -1081,9 +1081,9 @@ class AutoConfig:
                     f"textual_inversion_path: {search_word} -> {textual_inversion_path.model_status.site_url}"
                 )
 
-                pretrained_model_name_or_paths[pretrained_model_name_or_paths.index(search_word)] = (
-                    textual_inversion_path.model_path
-                )
+                pretrained_model_name_or_paths[
+                    pretrained_model_name_or_paths.index(search_word)
+                ] = textual_inversion_path.model_path
 
         self.load_textual_inversion(
             pretrained_model_name_or_paths, token=tokens, tokenizer=tokenizer, text_encoder=text_encoder, **kwargs
@@ -1249,7 +1249,7 @@ class EasyPipelineForText2Image(AutoPipelineForText2Image):
         <Tip>
 
         To use private or [gated](https://huggingface.co/docs/hub/models-gated#gated-models) models, log-in with
-        `hf auth login`.
+        `huggingface-cli login`.
 
         </Tip>
 
@@ -1358,7 +1358,7 @@ class EasyPipelineForText2Image(AutoPipelineForText2Image):
         <Tip>
 
         To use private or [gated](https://huggingface.co/docs/hub/models-gated#gated-models) models, log-in with
-        `hf auth login`.
+        `huggingface-cli login`.
 
         </Tip>
 
@@ -1507,7 +1507,7 @@ class EasyPipelineForImage2Image(AutoPipelineForImage2Image):
         <Tip>
 
         To use private or [gated](https://huggingface.co/docs/hub/models-gated#gated-models) models, log-in with
-        `hf auth login`.
+        `huggingface-cli login`.
 
         </Tip>
 
@@ -1617,7 +1617,7 @@ class EasyPipelineForImage2Image(AutoPipelineForImage2Image):
         <Tip>
 
         To use private or [gated](https://huggingface.co/docs/hub/models-gated#gated-models) models, log-in with
-        `hf auth login`.
+        `huggingface-cli login`.
 
         </Tip>
 
@@ -1766,7 +1766,7 @@ class EasyPipelineForInpainting(AutoPipelineForInpainting):
         <Tip>
 
         To use private or [gated](https://huggingface.co/docs/hub/models-gated#gated-models) models, log-in with
-        `hf auth login
+        `huggingface-cli login`.
 
         </Tip>
 
@@ -1875,7 +1875,7 @@ class EasyPipelineForInpainting(AutoPipelineForInpainting):
         <Tip>
 
         To use private or [gated](https://huggingface.co/docs/hub/models-gated#gated-models) models, log-in with
-        `hf auth login
+        `huggingface-cli login`.
 
         </Tip>
 

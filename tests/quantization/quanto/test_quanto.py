@@ -6,13 +6,10 @@ from diffusers import FluxPipeline, FluxTransformer2DModel, QuantoConfig
 from diffusers.models.attention_processor import Attention
 from diffusers.utils import is_optimum_quanto_available, is_torch_available
 from diffusers.utils.testing_utils import (
-    backend_empty_cache,
-    backend_reset_peak_memory_stats,
-    enable_full_determinism,
     nightly,
     numpy_cosine_similarity_distance,
     require_accelerate,
-    require_big_accelerator,
+    require_big_gpu_with_torch_cuda,
     require_torch_cuda_compatibility,
     torch_device,
 )
@@ -26,11 +23,9 @@ if is_torch_available():
 
     from ..utils import LoRALayer, get_memory_consumption_stat
 
-enable_full_determinism()
-
 
 @nightly
-@require_big_accelerator
+@require_big_gpu_with_torch_cuda
 @require_accelerate
 class QuantoBaseTesterMixin:
     model_id = None
@@ -44,13 +39,13 @@ class QuantoBaseTesterMixin:
     _test_torch_compile = False
 
     def setUp(self):
-        backend_reset_peak_memory_stats(torch_device)
-        backend_empty_cache(torch_device)
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.empty_cache()
         gc.collect()
 
     def tearDown(self):
-        backend_reset_peak_memory_stats(torch_device)
-        backend_empty_cache(torch_device)
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.empty_cache()
         gc.collect()
 
     def get_dummy_init_kwargs(self):
@@ -94,7 +89,7 @@ class QuantoBaseTesterMixin:
         self.model_cls._keep_in_fp32_modules = self.keep_in_fp32_module
 
         model = self.model_cls.from_pretrained(**self.get_dummy_model_init_kwargs())
-        model.to(torch_device)
+        model.to("cuda")
 
         for name, module in model.named_modules():
             if isinstance(module, torch.nn.Linear):
@@ -112,7 +107,7 @@ class QuantoBaseTesterMixin:
         init_kwargs.update({"quantization_config": quantization_config})
 
         model = self.model_cls.from_pretrained(**init_kwargs)
-        model.to(torch_device)
+        model.to("cuda")
 
         for name, module in model.named_modules():
             if name in self.modules_to_not_convert:
@@ -127,8 +122,7 @@ class QuantoBaseTesterMixin:
 
         with self.assertRaises(ValueError):
             # Tries with a `device` and `dtype`
-            device_0 = f"{torch_device}:0"
-            model.to(device=device_0, dtype=torch.float16)
+            model.to(device="cuda:0", dtype=torch.float16)
 
         with self.assertRaises(ValueError):
             # Tries with a cast
@@ -139,7 +133,7 @@ class QuantoBaseTesterMixin:
             model.half()
 
         # This should work
-        model.to(torch_device)
+        model.to("cuda")
 
     def test_serialization(self):
         model = self.model_cls.from_pretrained(**self.get_dummy_model_init_kwargs())

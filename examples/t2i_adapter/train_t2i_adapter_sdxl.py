@@ -60,7 +60,7 @@ if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.35.0.dev0")
+check_min_version("0.33.0.dev0")
 
 logger = get_logger(__name__)
 
@@ -783,7 +783,7 @@ def main(args):
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
             "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
-            " Please use `hf auth login` to authenticate with the Hub."
+            " Please use `huggingface-cli login` to authenticate with the Hub."
         )
 
     logging_dir = Path(args.output_dir, args.logging_dir)
@@ -1190,7 +1190,7 @@ def main(args):
                 bsz = latents.shape[0]
 
                 # Cubic sampling to sample a random timestep for each image.
-                # For more details about why cubic sampling is used, refer to section 3.4 of https://huggingface.co/papers/2302.08453
+                # For more details about why cubic sampling is used, refer to section 3.4 of https://arxiv.org/abs/2302.08453
                 timesteps = torch.rand((bsz,), device=latents.device)
                 timesteps = (1 - timesteps**3) * noise_scheduler.config.num_train_timesteps
                 timesteps = timesteps.long().to(noise_scheduler.timesteps.dtype)

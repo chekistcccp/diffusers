@@ -1,0 +1,15 @@
+accelerate launch --config_file accelerate_config.yaml train_protein_clip_alignment.py \
+    --pretrained_model_name_or_path "/media/ssd1/guojirui/diffuser2/data/clip-vit-large-patch14" \
+    --species_encoder_config pretrained_encoder/config.yml \
+    --dataset_name /media/ssd1/guojirui/diffuser2/data/20260517/train \
+    --description_dataset /media/ssd1/guojirui/diffuser2/data/20260517/16birds-text-image-data/train \
+    --use_clip_vision \
+    --output_dir alignment_output \
+    --num_train_epochs 2000 \
+    --train_batch_size 256 \
+    --learning_rate 1e-4 \
+    --loss_feature_weight 1.0 \
+    --loss_contrastive_weight 0.5 \
+    --loss_classify_weight 0.1 \
+    --mixed_precision fp16 \
+    --checkpointing_steps 20000

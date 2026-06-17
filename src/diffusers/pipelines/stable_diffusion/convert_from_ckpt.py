@@ -52,8 +52,6 @@ from ...schedulers import (
     UnCLIPScheduler,
 )
 from ...utils import is_accelerate_available, logging
-from ...utils.constants import DIFFUSERS_REQUEST_TIMEOUT
-from ...utils.torch_utils import get_device
 from ..latent_diffusion.pipeline_latent_diffusion import LDMBertConfig, LDMBertModel
 from ..paint_by_example import PaintByExampleImageEncoder
 from ..pipeline_utils import DiffusionPipeline
@@ -351,14 +349,8 @@ def create_vae_diffusers_config(original_config, image_size: int):
     _ = original_config["model"]["params"]["first_stage_config"]["params"]["embed_dim"]
 
     block_out_channels = [vae_params["ch"] * mult for mult in vae_params["ch_mult"]]
-    down_block_types = [
-        "DownEncoderBlock2D" if image_size // 2**i not in vae_params["attn_resolutions"] else "AttnDownEncoderBlock2D"
-        for i, _ in enumerate(block_out_channels)
-    ]
-    up_block_types = [
-        "UpDecoderBlock2D" if image_size // 2**i not in vae_params["attn_resolutions"] else "AttnUpDecoderBlock2D"
-        for i, _ in enumerate(block_out_channels)
-    ][::-1]
+    down_block_types = ["DownEncoderBlock2D"] * len(block_out_channels)
+    up_block_types = ["UpDecoderBlock2D"] * len(block_out_channels)
 
     config = {
         "sample_size": image_size,
@@ -1273,7 +1265,7 @@ def download_from_original_stable_diffusion_ckpt(
             checkpoint = safe_load(checkpoint_path_or_dict, device="cpu")
         else:
             if device is None:
-                device = get_device()
+                device = "cuda" if torch.cuda.is_available() else "cpu"
                 checkpoint = torch.load(checkpoint_path_or_dict, map_location=device)
             else:
                 checkpoint = torch.load(checkpoint_path_or_dict, map_location=device)
@@ -1332,7 +1324,7 @@ def download_from_original_stable_diffusion_ckpt(
             config_url = "https://raw.githubusercontent.com/Stability-AI/stablediffusion/main/configs/stable-diffusion/x4-upscaling.yaml"
 
         if config_url is not None:
-            original_config_file = BytesIO(requests.get(config_url, timeout=DIFFUSERS_REQUEST_TIMEOUT).content)
+            original_config_file = BytesIO(requests.get(config_url).content)
         else:
             with open(original_config_file, "r") as f:
                 original_config_file = f.read()
@@ -1843,7 +1835,7 @@ def download_controlnet_from_original_ckpt(
                 checkpoint[key] = f.get_tensor(key)
     else:
         if device is None:
-            device = get_device()
+            device = "cuda" if torch.cuda.is_available() else "cpu"
             checkpoint = torch.load(checkpoint_path, map_location=device)
         else:
             checkpoint = torch.load(checkpoint_path, map_location=device)

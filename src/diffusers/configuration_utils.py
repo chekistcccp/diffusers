@@ -35,7 +35,6 @@ from huggingface_hub.utils import (
     validate_hf_hub_args,
 )
 from requests import HTTPError
-from typing_extensions import Self
 
 from . import __version__
 from .utils import (
@@ -176,7 +175,6 @@ class ConfigMixin:
             token = kwargs.pop("token", None)
             repo_id = kwargs.pop("repo_id", save_directory.split(os.path.sep)[-1])
             repo_id = create_repo(repo_id, exist_ok=True, private=private, token=token).repo_id
-            subfolder = kwargs.pop("subfolder", None)
 
             self._upload_folder(
                 save_directory,
@@ -184,13 +182,10 @@ class ConfigMixin:
                 token=token,
                 commit_message=commit_message,
                 create_pr=create_pr,
-                subfolder=subfolder,
             )
 
     @classmethod
-    def from_config(
-        cls, config: Union[FrozenDict, Dict[str, Any]] = None, return_unused_kwargs=False, **kwargs
-    ) -> Union[Self, Tuple[Self, Dict[str, Any]]]:
+    def from_config(cls, config: Union[FrozenDict, Dict[str, Any]] = None, return_unused_kwargs=False, **kwargs):
         r"""
         Instantiate a Python class from a config dictionary.
 
@@ -407,7 +402,7 @@ class ConfigMixin:
                 raise EnvironmentError(
                     f"{pretrained_model_name_or_path} is not a local folder and is not a valid model identifier"
                     " listed on 'https://huggingface.co/models'\nIf this is a private repository, make sure to pass a"
-                    " token having permission to this repo with `token` or log in with `hf auth login`."
+                    " token having permission to this repo with `token` or log in with `huggingface-cli login`."
                 )
             except RevisionNotFoundError:
                 raise EnvironmentError(
@@ -603,10 +598,6 @@ class ConfigMixin:
                 value = value.tolist()
             elif isinstance(value, Path):
                 value = value.as_posix()
-            elif hasattr(value, "to_dict") and callable(value.to_dict):
-                value = value.to_dict()
-            elif isinstance(value, list):
-                value = [to_json_saveable(v) for v in value]
             return value
 
         if "quantization_config" in config_dict:
@@ -763,7 +754,4 @@ class LegacyConfigMixin(ConfigMixin):
         # resolve remapping
         remapped_class = _fetch_remapped_cls_from_config(config, cls)
 
-        if remapped_class is cls:
-            return super(LegacyConfigMixin, remapped_class).from_config(config, return_unused_kwargs, **kwargs)
-        else:
-            return remapped_class.from_config(config, return_unused_kwargs, **kwargs)
+        return remapped_class.from_config(config, return_unused_kwargs, **kwargs)

@@ -5,7 +5,6 @@ from ...utils import (
     OptionalDependencyNotAvailable,
     _LazyModule,
     get_objects_from_module,
-    is_opencv_available,
     is_torch_available,
     is_transformers_available,
 )
@@ -16,12 +15,12 @@ _import_structure = {}
 
 
 try:
-    if not (is_transformers_available() and is_torch_available() and is_opencv_available()):
+    if not (is_transformers_available() and is_torch_available()):
         raise OptionalDependencyNotAvailable()
 except OptionalDependencyNotAvailable:
-    from ...utils import dummy_torch_and_transformers_and_opencv_objects  # noqa F403
+    from ...utils import dummy_torch_and_transformers_objects  # noqa F403
 
-    _dummy_objects.update(get_objects_from_module(dummy_torch_and_transformers_and_opencv_objects))
+    _dummy_objects.update(get_objects_from_module(dummy_torch_and_transformers_objects))
 else:
     _import_structure["pipeline_consisid"] = ["ConsisIDPipeline"]
 

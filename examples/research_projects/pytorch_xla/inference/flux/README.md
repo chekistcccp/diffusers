@@ -40,7 +40,7 @@ cd examples/research_projects/pytorch_xla/inference/flux/
 As the model is gated, before using it with diffusers you first need to go to the [FLUX.1 [dev] Hugging Face page](https://huggingface.co/black-forest-labs/FLUX.1-dev), fill in the form and accept the gate. Once you are in, you need to log in so that your system knows you’ve accepted the gate. Use the command below to log in:
 
 ```bash
-hf auth login
+huggingface-cli login
 ```
 
 Then run:

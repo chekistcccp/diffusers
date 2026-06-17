@@ -1,4 +1,4 @@
-# Copyright 2025 The HuggingFace Team.
+# Copyright 2024 The HuggingFace Team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,10 +24,9 @@ from transformers import AutoTokenizer, T5EncoderModel
 from diffusers import AutoencoderKLCogVideoX, ConsisIDPipeline, ConsisIDTransformer3DModel, DDIMScheduler
 from diffusers.utils import load_image
 from diffusers.utils.testing_utils import (
-    backend_empty_cache,
     enable_full_determinism,
     numpy_cosine_similarity_distance,
-    require_torch_accelerator,
+    require_torch_gpu,
     slow,
     torch_device,
 )
@@ -280,7 +279,7 @@ class ConsisIDPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
         generator_device = "cpu"
         components = self.get_dummy_components()
 
-        # The reason to modify it this way is because ConsisID Transformer limits the generation to resolutions used during initialization.
+        # The reason to modify it this way is because ConsisID Transformer limits the generation to resolutions used during initalization.
         # This limitation comes from using learned positional embeddings which cannot be generated on-the-fly like sincos or RoPE embeddings.
         # See the if-statement on "self.use_learned_positional_embeddings" in diffusers/models/embeddings.py
         components["transformer"] = ConsisIDTransformer3DModel.from_config(
@@ -317,19 +316,19 @@ class ConsisIDPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
 
 
 @slow
-@require_torch_accelerator
+@require_torch_gpu
 class ConsisIDPipelineIntegrationTests(unittest.TestCase):
     prompt = "A painting of a squirrel eating a burger."
 
     def setUp(self):
         super().setUp()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def tearDown(self):
         super().tearDown()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def test_consisid(self):
         generator = torch.Generator("cpu").manual_seed(0)
@@ -339,8 +338,8 @@ class ConsisIDPipelineIntegrationTests(unittest.TestCase):
 
         prompt = self.prompt
         image = load_image("https://github.com/PKU-YuanGroup/ConsisID/blob/main/asserts/example_images/2.png?raw=true")
-        id_vit_hidden = [torch.ones([1, 577, 1024])] * 5
-        id_cond = torch.ones(1, 1280)
+        id_vit_hidden = [torch.ones([1, 2, 2])] * 1
+        id_cond = torch.ones(1, 2)
 
         videos = pipe(
             image=image,
@@ -358,5 +357,5 @@ class ConsisIDPipelineIntegrationTests(unittest.TestCase):
         video = videos[0]
         expected_video = torch.randn(1, 16, 480, 720, 3).numpy()
 
-        max_diff = numpy_cosine_similarity_distance(video.cpu(), expected_video)
+        max_diff = numpy_cosine_similarity_distance(video, expected_video)
         assert max_diff < 1e-3, f"Max diff is too high. got {video}"

@@ -13,7 +13,7 @@ args = parser.parse_args()
 
 
 device = "cpu"
-prompt = "a lovely <dicoo> in red dress and hat, in the snowly and brightly night, with many brightly buildings"
+prompt = "a lovely <dicoo> in red dress and hat, in the snowly and brightly night, with many brighly buildings"
 
 model_id = "path-to-your-trained-model"
 pipe = StableDiffusionPipeline.from_pretrained(model_id)

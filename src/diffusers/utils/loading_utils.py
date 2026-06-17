@@ -7,7 +7,6 @@ import PIL.Image
 import PIL.ImageOps
 import requests
 
-from .constants import DIFFUSERS_REQUEST_TIMEOUT
 from .import_utils import BACKENDS_MAPPING, is_imageio_available
 
 
@@ -30,7 +29,7 @@ def load_image(
     """
     if isinstance(image, str):
         if image.startswith("http://") or image.startswith("https://"):
-            image = PIL.Image.open(requests.get(image, stream=True, timeout=DIFFUSERS_REQUEST_TIMEOUT).raw)
+            image = PIL.Image.open(requests.get(image, stream=True).raw)
         elif os.path.isfile(image):
             image = PIL.Image.open(image)
         else:

@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2025 HuggingFace Inc.
+# Copyright 2024 HuggingFace Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -37,13 +37,12 @@ from diffusers.utils import logging
 from diffusers.utils.import_utils import is_accelerate_available
 from diffusers.utils.testing_utils import (
     CaptureLogger,
-    backend_empty_cache,
     is_flaky,
     load_image,
     nightly,
     numpy_cosine_similarity_distance,
     require_peft_backend,
-    require_torch_accelerator,
+    require_torch_gpu,
     slow,
     torch_device,
 )
@@ -106,66 +105,32 @@ class StableDiffusionXLLoRATests(PeftLoraLoaderMixinTests, unittest.TestCase):
     def setUp(self):
         super().setUp()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def tearDown(self):
         super().tearDown()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     @is_flaky
     def test_multiple_wrong_adapter_name_raises_error(self):
         super().test_multiple_wrong_adapter_name_raises_error()
 
-    def test_simple_inference_with_text_denoiser_lora_unfused(self):
-        if torch.cuda.is_available():
-            expected_atol = 9e-2
-            expected_rtol = 9e-2
-        else:
-            expected_atol = 1e-3
-            expected_rtol = 1e-3
-
-        super().test_simple_inference_with_text_denoiser_lora_unfused(
-            expected_atol=expected_atol, expected_rtol=expected_rtol
-        )
-
-    def test_simple_inference_with_text_lora_denoiser_fused_multi(self):
-        if torch.cuda.is_available():
-            expected_atol = 9e-2
-            expected_rtol = 9e-2
-        else:
-            expected_atol = 1e-3
-            expected_rtol = 1e-3
-
-        super().test_simple_inference_with_text_lora_denoiser_fused_multi(
-            expected_atol=expected_atol, expected_rtol=expected_rtol
-        )
-
-    def test_lora_scale_kwargs_match_fusion(self):
-        if torch.cuda.is_available():
-            expected_atol = 9e-2
-            expected_rtol = 9e-2
-        else:
-            expected_atol = 1e-3
-            expected_rtol = 1e-3
-
-        super().test_lora_scale_kwargs_match_fusion(expected_atol=expected_atol, expected_rtol=expected_rtol)
-
 
 @slow
 @nightly
-@require_torch_accelerator
+@require_torch_gpu
 @require_peft_backend
 class LoraSDXLIntegrationTests(unittest.TestCase):
     def setUp(self):
         super().setUp()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def tearDown(self):
         super().tearDown()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def test_sdxl_1_0_lora(self):
         generator = torch.Generator("cpu").manual_seed(0)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
-# Copyright 2025 bram-w, The HuggingFace Inc. team. All rights reserved.
+# Copyright 2024 bram-w, The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -86,7 +86,7 @@ def import_model_class_from_model_name_or_path(pretrained_model_name_or_path: st
 
 
 def log_validation(args, unet, accelerator, weight_dtype, epoch, is_final_validation=False):
-    logger.info(f"Running validation... \n Generating images with prompts:\n {VALIDATION_PROMPTS}.")
+    logger.info(f"Running validation... \n Generating images with prompts:\n" f" {VALIDATION_PROMPTS}.")
 
     # create pipeline
     pipeline = DiffusionPipeline.from_pretrained(
@@ -470,7 +470,7 @@ def main(args):
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
             "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
-            " Please use `hf auth login` to authenticate with the Hub."
+            " Please use `huggingface-cli login` to authenticate with the Hub."
         )
 
     logging_dir = Path(args.output_dir, args.logging_dir)

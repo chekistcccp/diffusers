@@ -33,11 +33,10 @@ from diffusers import (
     UNet2DConditionModel,
 )
 from diffusers.utils.testing_utils import (
-    backend_empty_cache,
     enable_full_determinism,
     floats_tensor,
     load_image,
-    require_torch_accelerator,
+    require_torch_gpu,
     slow,
     torch_device,
 )
@@ -396,17 +395,17 @@ class MarigoldIntrinsicsPipelineFastTests(MarigoldIntrinsicsPipelineTesterMixin,
 
 
 @slow
-@require_torch_accelerator
+@require_torch_gpu
 class MarigoldIntrinsicsPipelineIntegrationTests(unittest.TestCase):
     def setUp(self):
         super().setUp()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def tearDown(self):
         super().tearDown()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def _test_marigold_intrinsics(
         self,
@@ -425,7 +424,7 @@ class MarigoldIntrinsicsPipelineIntegrationTests(unittest.TestCase):
             from_pretrained_kwargs["torch_dtype"] = torch.float16
 
         pipe = MarigoldIntrinsicsPipeline.from_pretrained(model_id, **from_pretrained_kwargs)
-        if device in ["cuda", "xpu"]:
+        if device == "cuda":
             pipe.enable_model_cpu_offload()
         pipe.set_progress_bar_config(disable=None)
 
@@ -465,10 +464,10 @@ class MarigoldIntrinsicsPipelineIntegrationTests(unittest.TestCase):
             match_input_resolution=True,
         )
 
-    def test_marigold_intrinsics_einstein_f32_accelerator_G0_S1_P768_E1_B1_M1(self):
+    def test_marigold_intrinsics_einstein_f32_cuda_G0_S1_P768_E1_B1_M1(self):
         self._test_marigold_intrinsics(
             is_fp16=False,
-            device=torch_device,
+            device="cuda",
             generator_seed=0,
             expected_slice=np.array([0.62127, 0.61906, 0.61687, 0.61946, 0.61903, 0.61961, 0.61808, 0.62099, 0.62894]),
             num_inference_steps=1,
@@ -478,10 +477,10 @@ class MarigoldIntrinsicsPipelineIntegrationTests(unittest.TestCase):
             match_input_resolution=True,
         )
 
-    def test_marigold_intrinsics_einstein_f16_accelerator_G0_S1_P768_E1_B1_M1(self):
+    def test_marigold_intrinsics_einstein_f16_cuda_G0_S1_P768_E1_B1_M1(self):
         self._test_marigold_intrinsics(
             is_fp16=True,
-            device=torch_device,
+            device="cuda",
             generator_seed=0,
             expected_slice=np.array([0.62109, 0.61914, 0.61719, 0.61963, 0.61914, 0.61963, 0.61816, 0.62109, 0.62891]),
             num_inference_steps=1,
@@ -491,10 +490,10 @@ class MarigoldIntrinsicsPipelineIntegrationTests(unittest.TestCase):
             match_input_resolution=True,
         )
 
-    def test_marigold_intrinsics_einstein_f16_accelerator_G2024_S1_P768_E1_B1_M1(self):
+    def test_marigold_intrinsics_einstein_f16_cuda_G2024_S1_P768_E1_B1_M1(self):
         self._test_marigold_intrinsics(
             is_fp16=True,
-            device=torch_device,
+            device="cuda",
             generator_seed=2024,
             expected_slice=np.array([0.64111, 0.63916, 0.63623, 0.63965, 0.63916, 0.63965, 0.6377, 0.64062, 0.64941]),
             num_inference_steps=1,
@@ -504,10 +503,10 @@ class MarigoldIntrinsicsPipelineIntegrationTests(unittest.TestCase):
             match_input_resolution=True,
         )
 
-    def test_marigold_intrinsics_einstein_f16_accelerator_G0_S2_P768_E1_B1_M1(self):
+    def test_marigold_intrinsics_einstein_f16_cuda_G0_S2_P768_E1_B1_M1(self):
         self._test_marigold_intrinsics(
             is_fp16=True,
-            device=torch_device,
+            device="cuda",
             generator_seed=0,
             expected_slice=np.array([0.60254, 0.60059, 0.59961, 0.60156, 0.60107, 0.60205, 0.60254, 0.60449, 0.61133]),
             num_inference_steps=2,
@@ -517,10 +516,10 @@ class MarigoldIntrinsicsPipelineIntegrationTests(unittest.TestCase):
             match_input_resolution=True,
         )
 
-    def test_marigold_intrinsics_einstein_f16_accelerator_G0_S1_P512_E1_B1_M1(self):
+    def test_marigold_intrinsics_einstein_f16_cuda_G0_S1_P512_E1_B1_M1(self):
         self._test_marigold_intrinsics(
             is_fp16=True,
-            device=torch_device,
+            device="cuda",
             generator_seed=0,
             expected_slice=np.array([0.64551, 0.64453, 0.64404, 0.64502, 0.64844, 0.65039, 0.64502, 0.65039, 0.65332]),
             num_inference_steps=1,
@@ -530,10 +529,10 @@ class MarigoldIntrinsicsPipelineIntegrationTests(unittest.TestCase):
             match_input_resolution=True,
         )
 
-    def test_marigold_intrinsics_einstein_f16_accelerator_G0_S1_P768_E3_B1_M1(self):
+    def test_marigold_intrinsics_einstein_f16_cuda_G0_S1_P768_E3_B1_M1(self):
         self._test_marigold_intrinsics(
             is_fp16=True,
-            device=torch_device,
+            device="cuda",
             generator_seed=0,
             expected_slice=np.array([0.61572, 0.61377, 0.61182, 0.61426, 0.61377, 0.61426, 0.61279, 0.61572, 0.62354]),
             num_inference_steps=1,
@@ -544,10 +543,10 @@ class MarigoldIntrinsicsPipelineIntegrationTests(unittest.TestCase):
             match_input_resolution=True,
         )
 
-    def test_marigold_intrinsics_einstein_f16_accelerator_G0_S1_P768_E4_B2_M1(self):
+    def test_marigold_intrinsics_einstein_f16_cuda_G0_S1_P768_E4_B2_M1(self):
         self._test_marigold_intrinsics(
             is_fp16=True,
-            device=torch_device,
+            device="cuda",
             generator_seed=0,
             expected_slice=np.array([0.61914, 0.6167, 0.61475, 0.61719, 0.61719, 0.61768, 0.61572, 0.61914, 0.62695]),
             num_inference_steps=1,
@@ -558,10 +557,10 @@ class MarigoldIntrinsicsPipelineIntegrationTests(unittest.TestCase):
             match_input_resolution=True,
         )
 
-    def test_marigold_intrinsics_einstein_f16_accelerator_G0_S1_P512_E1_B1_M0(self):
+    def test_marigold_intrinsics_einstein_f16_cuda_G0_S1_P512_E1_B1_M0(self):
         self._test_marigold_intrinsics(
             is_fp16=True,
-            device=torch_device,
+            device="cuda",
             generator_seed=0,
             expected_slice=np.array([0.65332, 0.64697, 0.64648, 0.64844, 0.64697, 0.64111, 0.64941, 0.64209, 0.65332]),
             num_inference_steps=1,

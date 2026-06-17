@@ -80,7 +80,7 @@ pip3 install .'
 Run the following command to authenticate your token.
 
 ```bash
-hf auth login
+huggingface-cli login
 ```
 
 This script only trains the unet part of the network. The VAE and text encoder

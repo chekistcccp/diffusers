@@ -1,4 +1,4 @@
-# Copyright 2025 Kakao Brain and The HuggingFace Team. All rights reserved.
+# Copyright 2024 Kakao Brain and The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ from ...models import PriorTransformer, UNet2DConditionModel, UNet2DModel
 from ...schedulers import UnCLIPScheduler
 from ...utils import is_torch_xla_available, logging
 from ...utils.torch_utils import randn_tensor
-from ..pipeline_utils import DeprecatedPipelineMixin, DiffusionPipeline, ImagePipelineOutput
+from ..pipeline_utils import DiffusionPipeline, ImagePipelineOutput
 from .text_proj import UnCLIPTextProjModel
 
 
@@ -38,7 +38,7 @@ else:
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
-class UnCLIPPipeline(DeprecatedPipelineMixin, DiffusionPipeline):
+class UnCLIPPipeline(DiffusionPipeline):
     """
     Pipeline for text-to-image generation using unCLIP.
 
@@ -69,7 +69,6 @@ class UnCLIPPipeline(DeprecatedPipelineMixin, DiffusionPipeline):
 
     """
 
-    _last_supported_version = "0.33.1"
     _exclude_from_cpu_offload = ["prior"]
 
     prior: PriorTransformer

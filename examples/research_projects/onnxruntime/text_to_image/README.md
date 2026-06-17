@@ -41,7 +41,7 @@ You have to be a registered user in 🤗 Hugging Face Hub, and you'll also need 
 Run the following command to authenticate your token
 
 ```bash
-hf auth login
+huggingface-cli login
 ```
 
 If you have already cloned the repo, then you won't need to go through these steps.

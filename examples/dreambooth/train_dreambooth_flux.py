@@ -13,20 +13,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 
-# /// script
-# dependencies = [
-#     "diffusers @ git+https://github.com/huggingface/diffusers.git",
-#     "torch>=2.0.0",
-#     "accelerate>=0.31.0",
-#     "transformers>=4.41.2",
-#     "ftfy",
-#     "tensorboard",
-#     "Jinja2",
-#     "peft>=0.11.1",
-#     "sentencepiece",
-# ]
-# ///
-
 import argparse
 import copy
 import gc
@@ -79,7 +65,7 @@ if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.35.0.dev0")
+check_min_version("0.33.0.dev0")
 
 logger = get_logger(__name__)
 
@@ -632,15 +618,6 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
-    parser.add_argument(
-        "--image_interpolation_mode",
-        type=str,
-        default="lanczos",
-        choices=[
-            f.lower() for f in dir(transforms.InterpolationMode) if not f.startswith("__") and not f.endswith("__")
-        ],
-        help="The image interpolation method to use for resizing images.",
-    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -760,10 +737,7 @@ class DreamBoothDataset(Dataset):
             self.instance_images.extend(itertools.repeat(img, repeats))
 
         self.pixel_values = []
-        interpolation = getattr(transforms.InterpolationMode, args.image_interpolation_mode.upper(), None)
-        if interpolation is None:
-            raise ValueError(f"Unsupported interpolation mode {interpolation=}.")
-        train_resize = transforms.Resize(size, interpolation=interpolation)
+        train_resize = transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR)
         train_crop = transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size)
         train_flip = transforms.RandomHorizontalFlip(p=1.0)
         train_transforms = transforms.Compose(
@@ -921,10 +895,7 @@ def _encode_prompt_with_t5(
 
     prompt_embeds = text_encoder(text_input_ids.to(device))[0]
 
-    if hasattr(text_encoder, "module"):
-        dtype = text_encoder.module.dtype
-    else:
-        dtype = text_encoder.dtype
+    dtype = text_encoder.dtype
     prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
 
     _, seq_len, _ = prompt_embeds.shape
@@ -965,13 +936,9 @@ def _encode_prompt_with_clip(
 
     prompt_embeds = text_encoder(text_input_ids.to(device), output_hidden_states=False)
 
-    if hasattr(text_encoder, "module"):
-        dtype = text_encoder.module.dtype
-    else:
-        dtype = text_encoder.dtype
     # Use pooled output of CLIPTextModel
     prompt_embeds = prompt_embeds.pooler_output
-    prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
+    prompt_embeds = prompt_embeds.to(dtype=text_encoder.dtype, device=device)
 
     # duplicate text embeddings for each generation per prompt, using mps friendly method
     prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
@@ -991,12 +958,7 @@ def encode_prompt(
 ):
     prompt = [prompt] if isinstance(prompt, str) else prompt
     batch_size = len(prompt)
-
-    if hasattr(text_encoders[0], "module"):
-        dtype = text_encoders[0].module.dtype
-    else:
-        dtype = text_encoders[0].dtype
-
+    dtype = text_encoders[0].dtype
     device = device if device is not None else text_encoders[1].device
     pooled_prompt_embeds = _encode_prompt_with_clip(
         text_encoder=text_encoders[0],
@@ -1027,7 +989,7 @@ def main(args):
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
             "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
-            " Please use `hf auth login` to authenticate with the Hub."
+            " Please use `huggingface-cli login` to authenticate with the Hub."
         )
 
     if torch.backends.mps.is_available() and args.mixed_precision == "bf16":
@@ -1433,22 +1395,17 @@ def main(args):
                 tokens_two = torch.cat([tokens_two, class_tokens_two], dim=0)
 
     # Scheduler and math around the number of training steps.
-    # Check the PR https://github.com/huggingface/diffusers/pull/8312 for detailed explanation.
-    num_warmup_steps_for_scheduler = args.lr_warmup_steps * accelerator.num_processes
+    overrode_max_train_steps = False
+    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
-        len_train_dataloader_after_sharding = math.ceil(len(train_dataloader) / accelerator.num_processes)
-        num_update_steps_per_epoch = math.ceil(len_train_dataloader_after_sharding / args.gradient_accumulation_steps)
-        num_training_steps_for_scheduler = (
-            args.num_train_epochs * accelerator.num_processes * num_update_steps_per_epoch
-        )
-    else:
-        num_training_steps_for_scheduler = args.max_train_steps * accelerator.num_processes
+        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+        overrode_max_train_steps = True
 
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
         optimizer=optimizer,
-        num_warmup_steps=num_warmup_steps_for_scheduler,
-        num_training_steps=num_training_steps_for_scheduler,
+        num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
+        num_training_steps=args.max_train_steps * accelerator.num_processes,
         num_cycles=args.lr_num_cycles,
         power=args.lr_power,
     )
@@ -1475,14 +1432,8 @@ def main(args):
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-    if args.max_train_steps is None:
+    if overrode_max_train_steps:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-        if num_training_steps_for_scheduler != args.max_train_steps:
-            logger.warning(
-                f"The length of the 'train_dataloader' after 'accelerator.prepare' ({len(train_dataloader)}) does not match "
-                f"the expected length ({len_train_dataloader_after_sharding}) when the learning rate scheduler was created. "
-                f"This inconsistency may result in the learning rate scheduler not functioning properly."
-            )
     # Afterwards we recalculate our number of training epochs
     args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
@@ -1639,7 +1590,7 @@ def main(args):
                 )
 
                 # handle guidance
-                if unwrap_model(transformer).config.guidance_embeds:
+                if accelerator.unwrap_model(transformer).config.guidance_embeds:
                     guidance = torch.tensor([args.guidance_scale], device=accelerator.device)
                     guidance = guidance.expand(model_input.shape[0])
                 else:
@@ -1648,7 +1599,7 @@ def main(args):
                 # Predict the noise residual
                 model_pred = transformer(
                     hidden_states=packed_noisy_model_input,
-                    # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
+                    # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transforme rmodel (we should not keep it but I want to keep the inputs same for the model for testing)
                     timestep=timesteps / 1000,
                     guidance=guidance,
                     pooled_projections=pooled_prompt_embeds,
@@ -1765,9 +1716,9 @@ def main(args):
                 pipeline = FluxPipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
                     vae=vae,
-                    text_encoder=unwrap_model(text_encoder_one, keep_fp32_wrapper=False),
-                    text_encoder_2=unwrap_model(text_encoder_two, keep_fp32_wrapper=False),
-                    transformer=unwrap_model(transformer, keep_fp32_wrapper=False),
+                    text_encoder=accelerator.unwrap_model(text_encoder_one, keep_fp32_wrapper=False),
+                    text_encoder_2=accelerator.unwrap_model(text_encoder_two, keep_fp32_wrapper=False),
+                    transformer=accelerator.unwrap_model(transformer, keep_fp32_wrapper=False),
                     revision=args.revision,
                     variant=args.variant,
                     torch_dtype=weight_dtype,

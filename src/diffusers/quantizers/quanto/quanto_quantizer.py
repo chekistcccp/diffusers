@@ -175,7 +175,3 @@ class QuantoQuantizer(DiffusersQuantizer):
     @property
     def is_serializable(self):
         return True
-
-    @property
-    def is_compileable(self) -> bool:
-        return True

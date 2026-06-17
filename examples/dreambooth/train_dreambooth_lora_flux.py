@@ -13,20 +13,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 
-# /// script
-# dependencies = [
-#     "diffusers @ git+https://github.com/huggingface/diffusers.git",
-#     "torch>=2.0.0",
-#     "accelerate>=0.31.0",
-#     "transformers>=4.41.2",
-#     "ftfy",
-#     "tensorboard",
-#     "Jinja2",
-#     "peft>=0.11.1",
-#     "sentencepiece",
-# ]
-# ///
-
 import argparse
 import copy
 import itertools
@@ -41,6 +27,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.utils.checkpoint
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -66,7 +53,6 @@ from diffusers import (
 )
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import (
-    _collate_lora_metadata,
     _set_state_dict_into_text_encoder,
     cast_training_params,
     compute_density_for_timestep_sampling,
@@ -86,7 +72,7 @@ if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.35.0.dev0")
+check_min_version("0.33.0.dev0")
 
 logger = get_logger(__name__)
 
@@ -191,25 +177,16 @@ def log_validation(
         f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
         f" {args.validation_prompt}."
     )
-    pipeline = pipeline.to(accelerator.device, dtype=torch_dtype)
+    pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
 
     # run inference
     generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed is not None else None
-    autocast_ctx = torch.autocast(accelerator.device.type) if not is_final_validation else nullcontext()
+    # autocast_ctx = torch.autocast(accelerator.device.type) if not is_final_validation else nullcontext()
+    autocast_ctx = nullcontext()
 
-    # pre-calculate  prompt embeds, pooled prompt embeds, text ids because t5 does not support autocast
-    with torch.no_grad():
-        prompt_embeds, pooled_prompt_embeds, text_ids = pipeline.encode_prompt(
-            pipeline_args["prompt"], prompt_2=pipeline_args["prompt"]
-        )
-    images = []
-    for _ in range(args.num_validation_images):
-        with autocast_ctx:
-            image = pipeline(
-                prompt_embeds=prompt_embeds, pooled_prompt_embeds=pooled_prompt_embeds, generator=generator
-            ).images[0]
-            images.append(image)
+    with autocast_ctx:
+        images = [pipeline(**pipeline_args, generator=generator).images[0] for _ in range(args.num_validation_images)]
 
     for tracker in accelerator.trackers:
         phase_name = "test" if is_final_validation else "validation"
@@ -226,7 +203,8 @@ def log_validation(
             )
 
     del pipeline
-    free_memory()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return images
 
@@ -372,14 +350,6 @@ def parse_args(input_args=None):
         default=4,
         help=("The dimension of the LoRA update matrices."),
     )
-    parser.add_argument(
-        "--lora_alpha",
-        type=int,
-        default=4,
-        help="LoRA alpha to be used for additional scaling.",
-    )
-    parser.add_argument("--lora_dropout", type=float, default=0.0, help="Dropout probability for LoRA layers")
-
     parser.add_argument(
         "--with_prior_preservation",
         default=False,
@@ -589,7 +559,7 @@ def parse_args(input_args=None):
         type=str,
         default=None,
         help=(
-            'The transformer modules to apply LoRA training on. Please specify the layers in a comma separated. E.g. - "to_k,to_q,to_v,to_out.0" will result in lora training of attention layers only'
+            'The transformer modules to apply LoRA training on. Please specify the layers in a comma seperated. E.g. - "to_k,to_q,to_v,to_out.0" will result in lora training of attention layers only'
         ),
     )
 
@@ -962,10 +932,7 @@ def _encode_prompt_with_t5(
 
     prompt_embeds = text_encoder(text_input_ids.to(device))[0]
 
-    if hasattr(text_encoder, "module"):
-        dtype = text_encoder.module.dtype
-    else:
-        dtype = text_encoder.dtype
+    dtype = text_encoder.dtype
     prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
 
     _, seq_len, _ = prompt_embeds.shape
@@ -1006,13 +973,9 @@ def _encode_prompt_with_clip(
 
     prompt_embeds = text_encoder(text_input_ids.to(device), output_hidden_states=False)
 
-    if hasattr(text_encoder, "module"):
-        dtype = text_encoder.module.dtype
-    else:
-        dtype = text_encoder.dtype
     # Use pooled output of CLIPTextModel
     prompt_embeds = prompt_embeds.pooler_output
-    prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
+    prompt_embeds = prompt_embeds.to(dtype=text_encoder.dtype, device=device)
 
     # duplicate text embeddings for each generation per prompt, using mps friendly method
     prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
@@ -1031,11 +994,7 @@ def encode_prompt(
     text_input_ids_list=None,
 ):
     prompt = [prompt] if isinstance(prompt, str) else prompt
-
-    if hasattr(text_encoders[0], "module"):
-        dtype = text_encoders[0].module.dtype
-    else:
-        dtype = text_encoders[0].dtype
+    dtype = text_encoders[0].dtype
 
     pooled_prompt_embeds = _encode_prompt_with_clip(
         text_encoder=text_encoders[0],
@@ -1065,7 +1024,7 @@ def main(args):
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
             "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
-            " Please use `hf auth login` to authenticate with the Hub."
+            " Please use `huggingface-cli login` to authenticate with the Hub."
         )
 
     if torch.backends.mps.is_available() and args.mixed_precision == "bf16":
@@ -1257,8 +1216,7 @@ def main(args):
     # now we will add new LoRA weights the transformer layers
     transformer_lora_config = LoraConfig(
         r=args.rank,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
+        lora_alpha=args.rank,
         init_lora_weights="gaussian",
         target_modules=target_modules,
     )
@@ -1266,8 +1224,7 @@ def main(args):
     if args.train_text_encoder:
         text_lora_config = LoraConfig(
             r=args.rank,
-            lora_alpha=args.lora_alpha,
-            lora_dropout=args.lora_dropout,
+            lora_alpha=args.rank,
             init_lora_weights="gaussian",
             target_modules=["q_proj", "k_proj", "v_proj", "out_proj"],
         )
@@ -1283,14 +1240,12 @@ def main(args):
         if accelerator.is_main_process:
             transformer_lora_layers_to_save = None
             text_encoder_one_lora_layers_to_save = None
-            modules_to_save = {}
+
             for model in models:
                 if isinstance(model, type(unwrap_model(transformer))):
                     transformer_lora_layers_to_save = get_peft_model_state_dict(model)
-                    modules_to_save["transformer"] = model
                 elif isinstance(model, type(unwrap_model(text_encoder_one))):
                     text_encoder_one_lora_layers_to_save = get_peft_model_state_dict(model)
-                    modules_to_save["text_encoder"] = model
                 else:
                     raise ValueError(f"unexpected save model: {model.__class__}")
 
@@ -1301,7 +1256,6 @@ def main(args):
                 output_dir,
                 transformer_lora_layers=transformer_lora_layers_to_save,
                 text_encoder_lora_layers=text_encoder_one_lora_layers_to_save,
-                **_collate_lora_metadata(modules_to_save),
             )
 
     def load_model_hook(models, input_dir):
@@ -1321,7 +1275,7 @@ def main(args):
         lora_state_dict = FluxPipeline.lora_state_dict(input_dir)
 
         transformer_state_dict = {
-            f"{k.replace('transformer.', '')}": v for k, v in lora_state_dict.items() if k.startswith("transformer.")
+            f'{k.replace("transformer.", "")}': v for k, v in lora_state_dict.items() if k.startswith("transformer.")
         }
         transformer_state_dict = convert_unet_state_dict_to_peft(transformer_state_dict)
         incompatible_keys = set_peft_model_state_dict(transformer_, transformer_state_dict, adapter_name="default")
@@ -1551,22 +1505,17 @@ def main(args):
             free_memory()
 
     # Scheduler and math around the number of training steps.
-    # Check the PR https://github.com/huggingface/diffusers/pull/8312 for detailed explanation.
-    num_warmup_steps_for_scheduler = args.lr_warmup_steps * accelerator.num_processes
+    overrode_max_train_steps = False
+    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
-        len_train_dataloader_after_sharding = math.ceil(len(train_dataloader) / accelerator.num_processes)
-        num_update_steps_per_epoch = math.ceil(len_train_dataloader_after_sharding / args.gradient_accumulation_steps)
-        num_training_steps_for_scheduler = (
-            args.num_train_epochs * accelerator.num_processes * num_update_steps_per_epoch
-        )
-    else:
-        num_training_steps_for_scheduler = args.max_train_steps * accelerator.num_processes
+        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+        overrode_max_train_steps = True
 
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
         optimizer=optimizer,
-        num_warmup_steps=num_warmup_steps_for_scheduler,
-        num_training_steps=num_training_steps_for_scheduler,
+        num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
+        num_training_steps=args.max_train_steps * accelerator.num_processes,
         num_cycles=args.lr_num_cycles,
         power=args.lr_power,
     )
@@ -1593,14 +1542,8 @@ def main(args):
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-    if args.max_train_steps is None:
+    if overrode_max_train_steps:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-        if num_training_steps_for_scheduler != args.max_train_steps:
-            logger.warning(
-                f"The length of the 'train_dataloader' after 'accelerator.prepare' ({len(train_dataloader)}) does not match "
-                f"the expected length ({len_train_dataloader_after_sharding}) when the learning rate scheduler was created. "
-                f"This inconsistency may result in the learning rate scheduler not functioning properly."
-            )
     # Afterwards we recalculate our number of training epochs
     args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
@@ -1676,7 +1619,7 @@ def main(args):
         if args.train_text_encoder:
             text_encoder_one.train()
             # set top parameter requires_grad = True for gradient checkpointing works
-            unwrap_model(text_encoder_one).text_model.embeddings.requires_grad_(True)
+            accelerator.unwrap_model(text_encoder_one).text_model.embeddings.requires_grad_(True)
 
         for step, batch in enumerate(train_dataloader):
             models_to_accumulate = [transformer]
@@ -1767,7 +1710,7 @@ def main(args):
                 )
 
                 # handle guidance
-                if unwrap_model(transformer).config.guidance_embeds:
+                if accelerator.unwrap_model(transformer).config.guidance_embeds:
                     guidance = torch.tensor([args.guidance_scale], device=accelerator.device)
                     guidance = guidance.expand(model_input.shape[0])
                 else:
@@ -1776,7 +1719,7 @@ def main(args):
                 # Predict the noise residual
                 model_pred = transformer(
                     hidden_states=packed_noisy_model_input,
-                    # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
+                    # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transforme rmodel (we should not keep it but I want to keep the inputs same for the model for testing)
                     timestep=timesteps / 1000,
                     guidance=guidance,
                     pooled_projections=pooled_prompt_embeds,
@@ -1885,9 +1828,9 @@ def main(args):
                 pipeline = FluxPipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
                     vae=vae,
-                    text_encoder=unwrap_model(text_encoder_one),
-                    text_encoder_2=unwrap_model(text_encoder_two),
-                    transformer=unwrap_model(transformer),
+                    text_encoder=accelerator.unwrap_model(text_encoder_one),
+                    text_encoder_2=accelerator.unwrap_model(text_encoder_two),
+                    transformer=accelerator.unwrap_model(transformer),
                     revision=args.revision,
                     variant=args.variant,
                     torch_dtype=weight_dtype,
@@ -1911,19 +1854,16 @@ def main(args):
     # Save the lora layers
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        modules_to_save = {}
         transformer = unwrap_model(transformer)
         if args.upcast_before_saving:
             transformer.to(torch.float32)
         else:
             transformer = transformer.to(weight_dtype)
         transformer_lora_layers = get_peft_model_state_dict(transformer)
-        modules_to_save["transformer"] = transformer
 
         if args.train_text_encoder:
             text_encoder_one = unwrap_model(text_encoder_one)
             text_encoder_lora_layers = get_peft_model_state_dict(text_encoder_one.to(torch.float32))
-            modules_to_save["text_encoder"] = text_encoder_one
         else:
             text_encoder_lora_layers = None
 
@@ -1931,7 +1871,6 @@ def main(args):
             save_directory=args.output_dir,
             transformer_lora_layers=transformer_lora_layers,
             text_encoder_lora_layers=text_encoder_lora_layers,
-            **_collate_lora_metadata(modules_to_save),
         )
 
         # Final inference

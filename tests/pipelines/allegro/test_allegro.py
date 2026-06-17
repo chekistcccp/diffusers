@@ -1,4 +1,4 @@
-# Copyright 2025 The HuggingFace Team.
+# Copyright 2024 The HuggingFace Team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,7 +24,6 @@ from transformers import AutoTokenizer, T5Config, T5EncoderModel
 
 from diffusers import AllegroPipeline, AllegroTransformer3DModel, AutoencoderKLAllegro, DDIMScheduler
 from diffusers.utils.testing_utils import (
-    backend_empty_cache,
     enable_full_determinism,
     numpy_cosine_similarity_distance,
     require_hf_hub_version_greater,
@@ -342,12 +341,12 @@ class AllegroPipelineIntegrationTests(unittest.TestCase):
     def setUp(self):
         super().setUp()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def tearDown(self):
         super().tearDown()
         gc.collect()
-        backend_empty_cache(torch_device)
+        torch.cuda.empty_cache()
 
     def test_allegro(self):
         generator = torch.Generator("cpu").manual_seed(0)

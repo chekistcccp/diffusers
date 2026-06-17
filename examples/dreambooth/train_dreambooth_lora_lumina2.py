@@ -48,7 +48,7 @@ import diffusers
 from diffusers import (
     AutoencoderKL,
     FlowMatchEulerDiscreteScheduler,
-    Lumina2Pipeline,
+    Lumina2Text2ImgPipeline,
     Lumina2Transformer2DModel,
 )
 from diffusers.optimization import get_scheduler
@@ -72,7 +72,7 @@ if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.35.0.dev0")
+check_min_version("0.33.0.dev0")
 
 logger = get_logger(__name__)
 
@@ -328,9 +328,6 @@ def parse_args(input_args=None):
         default=4,
         help=("The dimension of the LoRA update matrices."),
     )
-
-    parser.add_argument("--lora_dropout", type=float, default=0.0, help="Dropout probability for LoRA layers")
-
     parser.add_argument(
         "--with_prior_preservation",
         default=False,
@@ -517,7 +514,7 @@ def parse_args(input_args=None):
         type=str,
         default=None,
         help=(
-            'The transformer modules to apply LoRA training on. Please specify the layers in a comma separated. E.g. - "to_k,to_q,to_v" will result in lora training of attention layers only'
+            'The transformer modules to apply LoRA training on. Please specify the layers in a comma seperated. E.g. - "to_k,to_q,to_v" will result in lora training of attention layers only'
         ),
     )
 
@@ -601,15 +598,6 @@ def parse_args(input_args=None):
             "Whether to upcast the trained transformer layers to float32 before saving (at the end of training). "
             "Defaults to precision dtype used for training to save memory"
         ),
-    )
-    parser.add_argument(
-        "--image_interpolation_mode",
-        type=str,
-        default="lanczos",
-        choices=[
-            f.lower() for f in dir(transforms.InterpolationMode) if not f.startswith("__") and not f.endswith("__")
-        ],
-        help="The image interpolation method to use for resizing images.",
     )
     parser.add_argument(
         "--offload",
@@ -736,11 +724,7 @@ class DreamBoothDataset(Dataset):
             self.instance_images.extend(itertools.repeat(img, repeats))
 
         self.pixel_values = []
-        interpolation = getattr(transforms.InterpolationMode, args.image_interpolation_mode.upper(), None)
-        if interpolation is None:
-            raise ValueError(f"Unsupported interpolation mode: {args.image_interpolation_mode}")
-
-        train_resize = transforms.Resize(size, interpolation=interpolation)
+        train_resize = transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR)
         train_crop = transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size)
         train_flip = transforms.RandomHorizontalFlip(p=1.0)
         train_transforms = transforms.Compose(
@@ -784,7 +768,7 @@ class DreamBoothDataset(Dataset):
 
         self.image_transforms = transforms.Compose(
             [
-                transforms.Resize(size, interpolation=interpolation),
+                transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
                 transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5], [0.5]),
@@ -859,7 +843,7 @@ def main(args):
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
             "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
-            " Please use `hf auth login` to authenticate with the Hub."
+            " Please use `huggingface-cli login` to authenticate with the Hub."
         )
 
     if torch.backends.mps.is_available() and args.mixed_precision == "bf16":
@@ -914,7 +898,7 @@ def main(args):
         cur_class_images = len(list(class_images_dir.iterdir()))
 
         if cur_class_images < args.num_class_images:
-            pipeline = Lumina2Pipeline.from_pretrained(
+            pipeline = Lumina2Text2ImgPipeline.from_pretrained(
                 args.pretrained_model_name_or_path,
                 torch_dtype=torch.bfloat16 if args.mixed_precision == "bf16" else torch.float16,
                 revision=args.revision,
@@ -1006,7 +990,7 @@ def main(args):
     text_encoder.to(dtype=torch.bfloat16)
 
     # Initialize a text encoding pipeline and keep it to CPU for now.
-    text_encoding_pipeline = Lumina2Pipeline.from_pretrained(
+    text_encoding_pipeline = Lumina2Text2ImgPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
         vae=None,
         transformer=None,
@@ -1026,7 +1010,6 @@ def main(args):
     transformer_lora_config = LoraConfig(
         r=args.rank,
         lora_alpha=args.rank,
-        lora_dropout=args.lora_dropout,
         init_lora_weights="gaussian",
         target_modules=target_modules,
     )
@@ -1051,7 +1034,7 @@ def main(args):
                 # make sure to pop weight so that corresponding model is not saved again
                 weights.pop()
 
-            Lumina2Pipeline.save_lora_weights(
+            Lumina2Text2ImgPipeline.save_lora_weights(
                 output_dir,
                 transformer_lora_layers=transformer_lora_layers_to_save,
             )
@@ -1067,10 +1050,10 @@ def main(args):
             else:
                 raise ValueError(f"unexpected save model: {model.__class__}")
 
-        lora_state_dict = Lumina2Pipeline.lora_state_dict(input_dir)
+        lora_state_dict = Lumina2Text2ImgPipeline.lora_state_dict(input_dir)
 
         transformer_state_dict = {
-            f"{k.replace('transformer.', '')}": v for k, v in lora_state_dict.items() if k.startswith("transformer.")
+            f'{k.replace("transformer.", "")}': v for k, v in lora_state_dict.items() if k.startswith("transformer.")
         }
         transformer_state_dict = convert_unet_state_dict_to_peft(transformer_state_dict)
         incompatible_keys = set_peft_model_state_dict(transformer_, transformer_state_dict, adapter_name="default")
@@ -1490,7 +1473,7 @@ def main(args):
         if accelerator.is_main_process:
             if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
                 # create pipeline
-                pipeline = Lumina2Pipeline.from_pretrained(
+                pipeline = Lumina2Text2ImgPipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
                     transformer=accelerator.unwrap_model(transformer),
                     revision=args.revision,
@@ -1520,14 +1503,14 @@ def main(args):
             transformer = transformer.to(weight_dtype)
         transformer_lora_layers = get_peft_model_state_dict(transformer)
 
-        Lumina2Pipeline.save_lora_weights(
+        Lumina2Text2ImgPipeline.save_lora_weights(
             save_directory=args.output_dir,
             transformer_lora_layers=transformer_lora_layers,
         )
 
         # Final inference
         # Load previous pipeline
-        pipeline = Lumina2Pipeline.from_pretrained(
+        pipeline = Lumina2Text2ImgPipeline.from_pretrained(
             args.pretrained_model_name_or_path,
             revision=args.revision,
             variant=args.variant,

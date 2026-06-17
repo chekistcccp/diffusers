@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding=utf-8
-# Copyright 2025 bram-w, The HuggingFace Inc. team. All rights reserved.
+# Copyright 2024 bram-w, The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -91,7 +91,7 @@ def import_model_class_from_model_name_or_path(
 
 
 def log_validation(args, unet, vae, accelerator, weight_dtype, epoch, is_final_validation=False):
-    logger.info(f"Running validation... \n Generating images with prompts:\n {VALIDATION_PROMPTS}.")
+    logger.info(f"Running validation... \n Generating images with prompts:\n" f" {VALIDATION_PROMPTS}.")
 
     if is_final_validation:
         if args.mixed_precision == "fp16":
@@ -512,7 +512,7 @@ def main(args):
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
             "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
-            " Please use `hf auth login` to authenticate with the Hub."
+            " Please use `huggingface-cli login` to authenticate with the Hub."
         )
 
     logging_dir = Path(args.output_dir, args.logging_dir)
@@ -585,7 +585,7 @@ def main(args):
 
     def enforce_zero_terminal_snr(scheduler):
         # Modified from https://github.com/huggingface/diffusers/blob/main/src/diffusers/schedulers/scheduling_ddpm.py#L93
-        # Original implementation https://huggingface.co/papers/2305.08891
+        # Original implementation https://arxiv.org/pdf/2305.08891.pdf
         # Turbo needs zero terminal SNR
         # Turbo: https://static1.squarespace.com/static/6213c340453c3f502425776e/t/65663480a92fba51d0e1023f/1701197769659/adversarial_diffusion_distillation.pdf
         # Convert betas to alphas_bar_sqrt

@@ -1,10 +1,4 @@
 from diffusers.utils import is_torch_available
-from diffusers.utils.testing_utils import (
-    backend_empty_cache,
-    backend_max_memory_allocated,
-    backend_reset_peak_memory_stats,
-    torch_device,
-)
 
 
 if is_torch_available():
@@ -36,9 +30,9 @@ if is_torch_available():
     @torch.no_grad()
     @torch.inference_mode()
     def get_memory_consumption_stat(model, inputs):
-        backend_reset_peak_memory_stats(torch_device)
-        backend_empty_cache(torch_device)
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.empty_cache()
 
         model(**inputs)
-        max_mem_allocated = backend_max_memory_allocated(torch_device)
-        return max_mem_allocated
+        max_memory_mem_allocated = torch.cuda.max_memory_allocated()
+        return max_memory_mem_allocated

@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2025 HuggingFace Inc.
+# Copyright 2024 HuggingFace Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,7 +25,6 @@ from transformers import CLIPTextConfig, CLIPTextModel, CLIPTokenizer
 from diffusers import AutoencoderKL, PNDMScheduler, StableDiffusionInpaintPipeline, UNet2DConditionModel
 from diffusers.utils.testing_utils import (
     backend_empty_cache,
-    backend_max_memory_allocated,
     backend_reset_max_memory_allocated,
     backend_reset_peak_memory_stats,
     enable_full_determinism,
@@ -288,6 +287,6 @@ class StableDiffusionInpaintPipelineIntegrationTests(unittest.TestCase):
             output_type="np",
         )
 
-        mem_bytes = backend_max_memory_allocated(torch_device)
+        mem_bytes = torch.cuda.max_memory_allocated()
         # make sure that less than 2.65 GB is allocated
         assert mem_bytes < 2.65 * 10**9
