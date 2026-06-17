@@ -37,6 +37,26 @@ def is_npu_available():
     return hasattr(torch, 'npu') and torch.npu.is_available()
 
 
+def masked_hidden_mse(pred, target, mask):
+    """MSE over hidden states, restricted to valid (non-padding) token positions.
+
+    pred, target: (batch, seq, hidden) hidden states.
+    mask: (batch, seq) with 1 for real caption tokens, 0 for padding.
+
+    The caption ("a photo of {species}" / a description) only occupies a few
+    leading positions; the rest are near-constant padding hidden states.
+    Averaging the MSE over valid positions only prevents the loss from forcing
+    the compressed protein tokens to regress toward those padding vectors,
+    which otherwise wastes most of the adapter's representational capacity.
+    """
+    pred = pred.to(torch.float32)
+    target = target.to(torch.float32)
+    mask = mask.to(torch.float32).unsqueeze(-1)  # (batch, seq, 1)
+    sq_err = (pred - target) ** 2
+    denom = mask.sum().clamp(min=1.0) * pred.shape[-1]
+    return (sq_err * mask).sum() / denom
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Align protein encoder to CLIP text encoder space")
     parser.add_argument("--pretrained_model_name_or_path", type=str, required=True)
@@ -603,7 +623,7 @@ def main():
                         clip_text_pooled = clip_text_outputs.pooler_output.detach()
 
                     loss_feature = (
-                        F.mse_loss(protein_hidden_states.to(torch.float32), clip_text_hidden) +
+                        masked_hidden_mse(protein_hidden_states, clip_text_hidden, clip_attention_mask) +
                         F.mse_loss(protein_pooled, clip_text_pooled)
                     )
 
@@ -706,8 +726,8 @@ def main():
                     )
                     clip_text_hidden = clip_text_outputs.last_hidden_state
 
-                val_loss += F.mse_loss(
-                    protein_hidden_states.to(torch.float32), clip_text_hidden
+                val_loss += masked_hidden_mse(
+                    protein_hidden_states, clip_text_hidden, clip_attention_mask
                 ).item()
                 val_steps += 1
 

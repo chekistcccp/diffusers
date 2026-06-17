@@ -17,7 +17,7 @@ parser.add_argument('--output_dir', type=str, required=True)
 parser.add_argument('--ckpt', type=int, required=True)
 parser.add_argument('--fname_prefix', type=str, default='bird')
 parser.add_argument('--adapter_checkpoint', type=str, default=None, help='Path to protein_clip_adapter.pt')
-parser.add_argument('--guidance_scale', type=float, default=1.0)
+parser.add_argument('--guidance_scale', type=float, default=7.5)
 args = parser.parse_args()
 
 
@@ -118,26 +118,26 @@ def protein_encode_prompt(self_pipe, prompt, device, num_images_per_prompt, do_c
         prompt_embeds = prompt_embeds.repeat_interleave(num_images_per_prompt, dim=0)
 
     if do_classifier_free_guidance:
-        # Use CLIP tokenizer to encode empty string for uncond embedding,
-        # matching the original SD pipeline behavior
+        # Build the unconditional embedding through the SAME adapter path as the
+        # conditional one (empty protein -> all-PAD input -> compression -> SOS/EOS
+        # -> position embed -> CLIP encoder -> final_layer_norm). The previous
+        # implementation encoded "" through the raw CLIP tokenizer + CLIP text model,
+        # which places uncond in a different distribution than cond, so the CFG
+        # direction (cond - uncond) points off-manifold and fails to steer global
+        # structure. Sharing the adapter path keeps both branches comparable.
         uncond_tokens = [""] * batch_size
-        clip_tokenized = text_encoder.clip_tokenizer(
+        uncond_tokenized = text_encoder.tokenizer(
             uncond_tokens,
-            max_length=text_encoder.clip_tokenizer.model_max_length,
+            max_length=text_encoder.tokenizer.model_max_length,
             padding="max_length",
             truncation=True,
             return_tensors="pt",
         )
-        uncond_input_ids = clip_tokenized["input_ids"].to(device)
-        uncond_attention_mask = clip_tokenized["attention_mask"].to(device)
-        # Use the internal CLIP text model directly for uncond (same path as adapter's forward)
-        from transformers import CLIPTextModel
-        clip_text_model = text_encoder.clip_text_model
-        clip_outputs = clip_text_model(
-            input_ids=uncond_input_ids,
-            attention_mask=uncond_attention_mask,
-        )
-        uncond_embeddings = clip_outputs.last_hidden_state.to(dtype=text_encoder.dtype)
+        uncond_input_ids = uncond_tokenized["input_ids"].to(device)
+        uncond_attention_mask = uncond_tokenized["attention_mask"].to(device)
+        uncond_embeddings = text_encoder(
+            uncond_input_ids, attention_mask=uncond_attention_mask, return_dict=True
+        )[0].to(dtype=text_encoder.dtype)
 
         if num_images_per_prompt > 1:
             uncond_embeddings = uncond_embeddings.repeat_interleave(num_images_per_prompt, dim=0)
