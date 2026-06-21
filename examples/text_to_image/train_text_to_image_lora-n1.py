@@ -52,7 +52,7 @@ from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 
-from pretrained_encoder.inference import speciesModel
+from pretrained_encoder.protein_clip_adapter import ProteinCLIPAdapter
 import yaml
 
 try:
@@ -474,8 +474,11 @@ class SuperNet(torch.nn.ModuleDict):
         self.text_encoder = text_encoder
 
     def forward(self, unet, input_ids, attention_mask, noisy_model_input, timesteps, return_dict=False):
-        with torch.no_grad():
-            encoder_hidden_states = self.text_encoder(input_ids, attention_mask=attention_mask)[0]
+        # No torch.no_grad() here: the protein adapter's trainable params (compression
+        # module, SOS/EOS, position embedding) are jointly fine-tuned, so gradients must
+        # flow back through the text encoder. Its frozen submodules (CLIP text model and
+        # protein embedding lookup) have requires_grad=False and receive no updates.
+        encoder_hidden_states = self.text_encoder(input_ids, attention_mask=attention_mask)[0]
         return unet(
             noisy_model_input, timesteps, encoder_hidden_states, return_dict=return_dict
         )[0]
@@ -583,21 +586,35 @@ def main():
     embeddings_path = resolve_config_path(config_base_dir, config['embeddings'])
     species_classes_path = resolve_config_path(config_base_dir, config['species_classes'])
     vocabulary_path = resolve_config_path(config_base_dir, config['vocabulary'])
-    checkpoint_path = args.species_encoder_checkpoint or config.get("checkpoint") or config.get("encoder_checkpoint")
-    if checkpoint_path is None:
-        raise ValueError(
-            "Need --species_encoder_checkpoint or a `checkpoint`/`encoder_checkpoint` entry in the species encoder config."
-        )
-    checkpoint_path = resolve_config_path(config_base_dir, checkpoint_path)
+    # Use the SAME ProteinCLIPAdapter that inference uses, so the UNet is conditioned
+    # on (and the adapter is jointly fine-tuned in) the exact distribution it will be
+    # run against. (Previously this trained against the old speciesModel/DAN encoder,
+    # creating a train/inference mismatch.)
+    alignment_checkpoint = (
+        args.species_encoder_checkpoint or config.get("checkpoint") or config.get("encoder_checkpoint")
+    )
+    if alignment_checkpoint is not None:
+        alignment_checkpoint = resolve_config_path(config_base_dir, alignment_checkpoint)
 
-    text_encoder = speciesModel(
-        config['max_tokens'],
-        embeddings_path,
-        species_classes_path,
-        vocabulary_path,
-        checkpoint_path=checkpoint_path,
+    text_encoder = ProteinCLIPAdapter(
+        pretrained_model_name_or_path=args.pretrained_model_name_or_path,
+        embeddings_dir=embeddings_path,
+        vocabulary_path=vocabulary_path,
+        species_classes_path=species_classes_path,
+        max_tokens=config['max_tokens'],
         device=accelerator.device,
-    )##
+    )
+    if alignment_checkpoint is not None:
+        logger.info(f"Loading stage-1 alignment checkpoint into adapter: {alignment_checkpoint}")
+        adapter_state = torch.load(alignment_checkpoint, map_location="cpu")
+        _, unexpected = text_encoder.load_state_dict(adapter_state, strict=False)
+        if unexpected:
+            logger.warning(f"Adapter checkpoint unexpected keys (ignored): {unexpected}")
+    else:
+        logger.warning(
+            "No alignment checkpoint provided; the protein adapter (compression/SOS/EOS/"
+            "position) will be jointly trained from random initialization."
+        )
     tokenizer = text_encoder.tokenizer
 
     vae = AutoencoderKL.from_pretrained(
@@ -609,8 +626,13 @@ def main():
     # freeze parameters of models to save more memory
     unet.requires_grad_(False)
     vae.requires_grad_(False)
-    text_encoder.requires_grad_(False)
-    text_encoder.eval()
+    # ProteinCLIPAdapter freezes its CLIP text encoder and protein embedding lookup in
+    # __init__; its lightweight adapter params (compression module, SOS/EOS, position
+    # embedding) stay trainable for joint fine-tuning. Re-assert frozen submodules.
+    text_encoder.clip_text_model.requires_grad_(False)
+    text_encoder.protein_embedding_layer.requires_grad_(False)
+    text_encoder.clip_text_model.eval()
+    text_encoder.protein_embedding_layer.eval()
 
     # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora unet) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -635,8 +657,9 @@ def main():
     # Add adapter and make sure the trainable params are in float32.
     unet.add_adapter(unet_lora_config)
     if args.mixed_precision == "fp16":
-        # only upcast trainable parameters (LoRA) into fp32
+        # only upcast trainable parameters (LoRA + protein adapter) into fp32
         cast_training_params(unet, dtype=torch.float32)
+        cast_training_params(text_encoder, dtype=torch.float32)
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -651,7 +674,13 @@ def main():
         else:
             raise ValueError("xformers is not available. Make sure it is installed correctly")
 
-    lora_layers = filter(lambda p: p.requires_grad, unet.parameters())
+    lora_layers = list(filter(lambda p: p.requires_grad, unet.parameters()))
+    adapter_params = [p for p in text_encoder.parameters() if p.requires_grad]
+    params_to_optimize = lora_layers + adapter_params
+    logger.info(
+        f"Trainable params: {sum(p.numel() for p in lora_layers):,} (UNet LoRA) + "
+        f"{sum(p.numel() for p in adapter_params):,} (protein adapter)"
+    )
 
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
@@ -680,7 +709,7 @@ def main():
         optimizer_cls = torch.optim.AdamW
 
     optimizer = optimizer_cls(
-        lora_layers,
+        params_to_optimize,
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -898,6 +927,12 @@ def main():
         else:
             accelerator.print(f"Resuming from checkpoint {path}")
             accelerator.load_state(os.path.join(args.output_dir, path))
+            adapter_resume = os.path.join(args.output_dir, path, "protein_clip_adapter.pt")
+            if os.path.isfile(adapter_resume):
+                text_encoder.load_state_dict(
+                    torch.load(adapter_resume, map_location="cpu"), strict=False
+                )
+                accelerator.print(f"Restored protein adapter params from {adapter_resume}")
             global_step = int(path.split("-")[1])
 
             initial_global_step = global_step
@@ -915,6 +950,10 @@ def main():
 
     for epoch in range(first_epoch, args.num_train_epochs):
         unet.train()
+        text_encoder.train()
+        # keep frozen submodules in eval mode
+        text_encoder.clip_text_model.eval()
+        text_encoder.protein_embedding_layer.eval()
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
@@ -992,7 +1031,7 @@ def main():
                 # Backpropagate
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = lora_layers
+                    params_to_clip = params_to_optimize
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
@@ -1041,6 +1080,15 @@ def main():
                             safe_serialization=True,
                         )
 
+                        adapter_state_dict = {
+                            k: v.cpu()
+                            for k, v in unwrap_model(text_encoder).state_dict().items()
+                            if k.startswith(
+                                ("compression_module", "sos_token", "eos_token", "position_embedding")
+                            )
+                        }
+                        torch.save(adapter_state_dict, os.path.join(save_path, "protein_clip_adapter.pt"))
+
                         logger.info(f"Saved state to {save_path}")
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
@@ -1076,6 +1124,13 @@ def main():
             unet_lora_layers=unet_lora_state_dict,
             safe_serialization=True,
         )
+
+        adapter_state_dict = {
+            k: v.cpu()
+            for k, v in unwrap_model(text_encoder).state_dict().items()
+            if k.startswith(("compression_module", "sos_token", "eos_token", "position_embedding"))
+        }
+        torch.save(adapter_state_dict, os.path.join(args.output_dir, "protein_clip_adapter.pt"))
 
         # Final inference
         # Load previous pipeline

@@ -55,6 +55,7 @@ class ProteinCLIPAdapter(nn.Module):
         num_compressed_tokens=75,
         protein_embedding_dim=1024,
         clip_hidden_dim=768,
+        causal_attention=False,
         device=None,
     ):
         super().__init__()
@@ -64,6 +65,11 @@ class ProteinCLIPAdapter(nn.Module):
         self.num_compressed_tokens = num_compressed_tokens
         self.clip_hidden_dim = clip_hidden_dim
         self.protein_embedding_dim = protein_embedding_dim
+        # The compressed protein tokens form an unordered *set*, not a left-to-right
+        # sentence. CLIP's text encoder is causal by default, which imposes a
+        # meaningless ordering on that set. Default to bidirectional attention so
+        # every latent (and the EOS summary) can attend to all others.
+        self.causal_attention = causal_attention
 
         clip_text_encoder = None
         text_encoder_dir = os.path.join(pretrained_model_name_or_path, "text_encoder")
@@ -215,12 +221,17 @@ class ProteinCLIPAdapter(nn.Module):
         clip_dtype = self.clip_text_model.embeddings.position_embedding.weight.dtype
         inputs_embeds = inputs_embeds.to(dtype=clip_dtype)
 
-        # Build causal attention mask (required by CLIP text encoder)
-        # CLIP uses causal attention: each token can only attend to itself and preceding tokens
+        # The compressed protein tokens are an unordered set, not a left-to-right
+        # sentence. Causal masking would impose a meaningless ordering, so default
+        # to bidirectional attention. Set causal_attention=True to restore CLIP's
+        # original causal behavior.
         seq_length = inputs_embeds.shape[1]
-        causal_attention_mask = _create_causal_attention_mask(
-            seq_length, inputs_embeds.device, clip_dtype
-        )
+        if self.causal_attention:
+            causal_attention_mask = _create_causal_attention_mask(
+                seq_length, inputs_embeds.device, clip_dtype
+            )
+        else:
+            causal_attention_mask = None
 
         # Convert clip_attention_mask to the 4D format expected by CLIP encoder
         # From (batch, seq_len) -> (batch, 1, seq_len, seq_len)
@@ -268,44 +279,101 @@ class ProteinCLIPAdapter(nn.Module):
         return next(self.parameters()).device
 
 
+class _MultiHeadAttention(nn.Module):
+    """Multi-head attention with queries in `query_dim` and keys/values in `kv_dim`.
+
+    Masked keys are filled with a finite large-negative value (not -inf), so a
+    fully masked row (e.g. the empty-protein null condition used for CFG) degrades
+    to a uniform average over the (zero) values instead of producing NaNs.
+    """
+
+    def __init__(self, query_dim, kv_dim, num_heads):
+        super().__init__()
+        if query_dim % num_heads != 0:
+            raise ValueError(f"query_dim {query_dim} must be divisible by num_heads {num_heads}")
+        self.num_heads = num_heads
+        self.head_dim = query_dim // num_heads
+        self.scale = self.head_dim ** -0.5
+        self.q_proj = nn.Linear(query_dim, query_dim)
+        self.k_proj = nn.Linear(kv_dim, query_dim)
+        self.v_proj = nn.Linear(kv_dim, query_dim)
+        self.out_proj = nn.Linear(query_dim, query_dim)
+
+    def forward(self, query, kv, key_padding_mask=None):
+        bsz, q_len, _ = query.shape
+        kv_len = kv.shape[1]
+
+        q = self.q_proj(query).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(kv).view(bsz, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(kv).view(bsz, kv_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+        attn = torch.matmul(q, k.transpose(-1, -2)) * self.scale  # (bsz, heads, q_len, kv_len)
+        if key_padding_mask is not None:
+            valid = key_padding_mask.to(torch.bool)[:, None, None, :]  # True = keep
+            attn = attn.masked_fill(~valid, torch.finfo(attn.dtype).min)
+        attn = F.softmax(attn, dim=-1)
+
+        out = torch.matmul(attn, v).transpose(1, 2).reshape(bsz, q_len, -1)
+        return self.out_proj(out)
+
+
 class AttentionCompressionFixed(nn.Module):
-    def __init__(self, input_dim, output_dim, num_tokens, num_compressed_tokens):
+    """Perceiver-style resampler: compresses a long protein-embedding sequence into
+    a fixed set of learned latent tokens via stacked (cross-attention -> latent
+    self-attention -> FFN) blocks with pre-norm and residual connections.
+
+    Replaces the previous single-layer, single-head attention pooling, which could
+    only capture averaged statistics (colour/texture) and lacked the depth to encode
+    structured, global content.
+    """
+
+    def __init__(self, input_dim, output_dim, num_tokens, num_compressed_tokens,
+                 num_heads=8, num_layers=2, ffn_mult=4):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.num_compressed_tokens = num_compressed_tokens
 
-        self.query_tokens = nn.Parameter(
-            torch.randn(1, num_compressed_tokens, input_dim) * 0.02
-        )
-        self.key_proj = nn.Linear(input_dim, input_dim)
-        self.value_proj = nn.Linear(input_dim, input_dim)
-        self.dim_compress = nn.Linear(input_dim, output_dim)
+        # Latent queries live in output_dim (CLIP hidden) space.
+        self.query_tokens = nn.Parameter(torch.randn(1, num_compressed_tokens, output_dim) * 0.02)
+        self.position_embedding = nn.Parameter(torch.randn(1, num_compressed_tokens, output_dim) * 0.02)
 
-        self.position_embedding = nn.Parameter(
-            torch.randn(1, num_compressed_tokens, input_dim) * 0.02
-        )
+        self.layers = nn.ModuleList([
+            nn.ModuleDict({
+                "cross_norm_q": nn.LayerNorm(output_dim),
+                "cross_norm_kv": nn.LayerNorm(input_dim),
+                "cross_attn": _MultiHeadAttention(output_dim, input_dim, num_heads),
+                "self_norm": nn.LayerNorm(output_dim),
+                "self_attn": _MultiHeadAttention(output_dim, output_dim, num_heads),
+                "ffn_norm": nn.LayerNorm(output_dim),
+                "ffn": nn.Sequential(
+                    nn.Linear(output_dim, output_dim * ffn_mult),
+                    nn.GELU(),
+                    nn.Linear(output_dim * ffn_mult, output_dim),
+                ),
+            })
+            for _ in range(num_layers)
+        ])
+        self.final_norm = nn.LayerNorm(output_dim)
 
     def forward(self, x, attention_mask=None):
         batch_size = x.shape[0]
+        latents = (self.query_tokens + self.position_embedding).expand(batch_size, -1, -1)
 
-        query = (self.query_tokens + self.position_embedding).expand(batch_size, -1, -1)
-        key = self.key_proj(x)
-        value = self.value_proj(x)
+        key_padding_mask = attention_mask.to(torch.bool) if attention_mask is not None else None
 
-        scale = self.input_dim ** -0.5
-        attn_scores = torch.bmm(query, key.transpose(1, 2)) * scale
+        for layer in self.layers:
+            # Cross-attention: latents read from the protein embedding sequence.
+            q = layer["cross_norm_q"](latents)
+            kv = layer["cross_norm_kv"](x)
+            latents = latents + layer["cross_attn"](q, kv, key_padding_mask=key_padding_mask)
 
-        if attention_mask is not None:
-            if attention_mask.dtype != torch.bool:
-                valid_tokens = attention_mask.to(dtype=torch.bool)
-            else:
-                valid_tokens = attention_mask
-            valid_tokens = valid_tokens.unsqueeze(1)
-            attn_scores = attn_scores.masked_fill(~valid_tokens, torch.finfo(attn_scores.dtype).min)
+            # Self-attention: latents exchange information with each other.
+            s = layer["self_norm"](latents)
+            latents = latents + layer["self_attn"](s, s)
 
-        attn_weights = F.softmax(attn_scores, dim=-1)
-        compressed = torch.bmm(attn_weights, value)
+            # Position-wise feed-forward.
+            f = layer["ffn_norm"](latents)
+            latents = latents + layer["ffn"](f)
 
-        output = self.dim_compress(compressed)
-        return output
+        return self.final_norm(latents)
